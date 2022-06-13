@@ -12,14 +12,14 @@ use MCServerStatus\Responses\MCPingResponse;
  * @package MCServerStatus
  */
 class MCPing {
-	
+
 	private static $socket;
 	private static $timeout;
 	private static $response;
-	
+
 	private function __construct() {
 	}
-	
+
 	/**
 	 * Check and get the server status
 	 * @param string $hostname
@@ -29,32 +29,32 @@ class MCPing {
 	 * @return MCPingResponse
 	 */
 	public static function check($hostname = '127.0.0.1', $port = 25565, $timeout = 2, $isOld17 = false) {
-		
+
 		//initialize response
 		self::$response = new MCPingResponse();
-		
+
 		try {
-			
+
 			//save hostname
 			self::$response->hostname = $hostname;
-			
+
 			//check port
 			if(!is_int($port) || $port < 1024 || $port > 65535) {
 				throw new MCPingException('Invalid port');
 			}
 			self::$response->port = $port;
-			
+
 			//check timeout
 			if(!is_int($timeout) || $timeout < 0) {
 				throw new MCPingException('Invalid timeout');
 			}
 			self::$timeout = $timeout;
-			
+
 			//validate isold17 parameter
 			if(!is_bool($isOld17)) {
 				throw new MCPingException('Invalid parameter in $isold17');
 			}
-			
+
 			//validate host
 			if(filter_var(self::$response->hostname, FILTER_VALIDATE_IP)) {
 				//host is ip => address is host
@@ -63,7 +63,7 @@ class MCPing {
 			else {
 				//find domain ip
 				$resolvedIP = gethostbyname(self::$response->hostname);
-				
+
 				if(filter_var($resolvedIP, FILTER_VALIDATE_IP)) {
 					//resolvedIP is a valid IP => address is resolvedIP
 					self::$response->address = $resolvedIP;
@@ -77,25 +77,25 @@ class MCPing {
 					 * the resolution time is almost always 15-25sec.
 					 * I don't know how fix the time.
 					 */
-					
+
 					if(!$dns) {
 						throw new MCPingException('dns_get_record(): A temporary server error occurred');
 					}
-					
+
 					if(is_array($dns) and count($dns) > 0) {
 						self::$response->address = gethostbyname($dns[0]['target']);
 						self::$response->port = $dns[0]['port'];
 					}
 				}
 			}
-			
+
 			//open the socket
 			self::$socket = @fsockopen(self::$response->address, self::$response->port, $errno, $errstr, self::$timeout);
 			if(!self::$socket) {
 				throw new MCPingException("Failed to connect or create a socket: $errstr");
 			}
 			stream_set_timeout(self::$socket, self::$timeout);
-			
+
 			//get server infos
 			if(!$isOld17) {
 				self::ping();
@@ -103,7 +103,7 @@ class MCPing {
 			else {
 				self::pingOld();
 			}
-			
+
 			//server status (if you are here the server is online obv)
 			self::$response->online = true;
 		}
@@ -114,61 +114,62 @@ class MCPing {
 			self::$response->error = $e->getMessage();
 		}
 		finally {
-			//close the socket
-			@fclose(self::$socket);
+			if (self::$socket) {
+				@fclose(self::$socket);
+			}
 		}
-		
+
 		//return the response
 		return self::$response;
 	}
-	
+
 	/**
 	 * Ping the server with version >= 1.7
 	 * @throws MCPingException
 	 */
 	private static function ping() {
-		
+
 		// for read timeout purposes
 		$timestart = microtime(true);
-		
+
 		//data to send with socket, see http://wiki.vg/Protocol (Status Ping)
-		
+
 		//packet ID = 0 (varint)
 		$data = "\x00";
-		
+
 		//protocol version (varint)
 		$data .= "\x04";
-		
+
 		//server (varint len + UTF-8 addr)
 		$data .= pack('c', strlen(self::$response->address)) . self::$response->address;
-		
+
 		//server port (unsigned short)
 		$data .= pack('n', self::$response->port);
-		
+
 		//next state: status (varint)
 		$data .= "\x01";
-		
+
 		//prepend length of packet ID + data
 		$data = pack('c', strlen($data)) . $data;
-		
+
 		//handshake
 		fwrite(self::$socket, $data);
-		
+
 		//start ping time
 		$startPing = microtime(true);
-		
+
 		// status ping
 		fwrite(self::$socket, "\x01\x00");
-		
+
 		//full packet length
 		$length = self::readVarInt();
 		if($length < 10) {
 			throw new MCPingException('Response length not valid');
 		}
-		
+
 		//packet type, in server ping it's 0
 		fgetc(self::$socket);
-		
+
 		//string length
 		$length = self::readVarInt();
 		$data = "";
@@ -177,10 +178,10 @@ class MCPing {
 				throw new MCPingException('Server read timed out');
 			}
 			$remainder = $length - strlen($data);
-			
+
 			//get the json string
 			$block = fread(self::$socket, $remainder);
-			
+
 			//abort if there is no progress
 			if(!$block) {
 				throw new MCPingException('Server returned too few data');
@@ -188,23 +189,23 @@ class MCPing {
 			$data .= $block;
 		}
 		while(strlen($data) < $length);
-		
+
 		//calculate the ping
 		self::$response->ping = round((microtime(true) - $startPing) * 1000);
-		
+
 		//no data
 		if($data === false) {
 			throw new MCPingException('Server didn\'t return any data');
 		}
-		
+
 		//decode json data
 		$data = json_decode($data, true);
-		
+
 		//optional json error
 		if(json_last_error() !== JSON_ERROR_NONE) {
 			throw new MCPingException(json_last_error_msg());
 		}
-		
+
 		self::$response->version = $data['version']['name'];
 		self::$response->protocol = $data['version']['protocol'];
 		self::$response->players = $data['players']['online'];
@@ -214,29 +215,29 @@ class MCPing {
 		self::$response->favicon = isset($data['favicon']) ? $data['favicon'] : null;
 		self::$response->mods = isset($data['modinfo']) ? $data['modinfo'] : null;
 	}
-	
+
 	/**
 	 * Ping the server with version < 1.7
 	 * @throws MCPingException
 	 */
 	private static function pingOld() {
 		fwrite(self::$socket, "\xFE\x01");
-		
+
 		//start ping time
 		$startPing = microtime(true);
-		
+
 		$data = fread(self::$socket, 512);
 		self::$response->ping = round((microtime(true) - $startPing) * 1000);
-		
+
 		$length = strlen($data);
 		if($length < 4 || $data[0] !== "\xFF") {
 			throw new MCPingException('$length < 4 || $data[ 0 ] !== "\xFF"');
 		}
-		
+
 		//strip packet header (kick message packet and short length)
 		$data = substr($data, 3);
 		$data = iconv('UTF-16BE', 'UTF-8', $data);
-		
+
 		//are we dealing with Minecraft 1.4+ server?
 		if($data[1] === "\xA7" && $data[2] === "\x31") {
 			$data = explode("\x00", $data);
@@ -254,9 +255,9 @@ class MCPing {
 			self::$response->protocol = 0;
 			self::$response->version = '1.3';
 		}
-		
+
 	}
-	
+
 	/**
 	 * Read int var from socket
 	 * @return int
@@ -265,7 +266,7 @@ class MCPing {
 	private static function readVarInt() {
 		$i = 0;
 		$j = 0;
-		
+
 		while(true) {
 			$k = @fgetc(self::$socket);
 			if($k === false) {
@@ -280,10 +281,10 @@ class MCPing {
 				break;
 			}
 		}
-		
+
 		return $i;
 	}
-	
+
 	/**
 	 * Return sample player list
 	 * @param $obj
@@ -292,7 +293,7 @@ class MCPing {
 	private static function createSamplePlayerList($obj) {
 		return (isset($obj) && is_array($obj) && count($obj) > 0) ? $obj : null;
 	}
-	
+
 	/**
 	 * Build the motd
 	 * @param $string
@@ -304,7 +305,7 @@ class MCPing {
 		}
 		else if(isset($string['extra'])) {
 			$output = '';
-			
+
 			foreach($string['extra'] as $item) {
 				if(isset($item['color'])) {
 					switch($item['color']) {
@@ -358,38 +359,38 @@ class MCPing {
 							break;
 					}
 				}
-				
+
 				if(isset($item['obfuscated'])) {
 					$output .= '§k';
 				}
-				
+
 				if(isset($item['bold'])) {
 					$output .= '§l';
 				}
-				
+
 				if(isset($item['strikethrough'])) {
 					$output .= '§m';
 				}
-				
+
 				if(isset($item['underline'])) {
 					$output .= '§n';
 				}
-				
+
 				if(isset($item['italic'])) {
 					$output .= '§o';
 				}
-				
+
 				if(isset($item['reset'])) {
 					$output .= '§r';
 				}
-				
+
 				$output .= $item['text'];
 			}
-			
+
 			if(isset($string['text'])) {
 				$output .= $string['text'];
 			}
-			
+
 			return $output;
 		}
 		else if(isset($string['text'])) {
